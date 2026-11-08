@@ -317,7 +317,8 @@ pub async fn adopt_pick(st: State<'_, App>, path: String) -> Res<Vec<Found>> {
         let folder = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         // A folder of games (like "Games"): no program of its own at the top and not a recomp
         // itself, so each folder inside that is a recomp the catalog knows is offered.
-        let top_program = std::fs::read_dir(&p).into_iter().flatten().flatten().any(|e| install::is_program(&e.path(), os));
+        let top_program = (os == "macos" && crate::macos::is_bundle(&p))
+            || std::fs::read_dir(&p).into_iter().flatten().flatten().any(|e| install::is_program(&e.path(), os));
         if !top_program && guess(&cat, &read_repo(&p), &[&folder]).is_none() {
             let mut many = vec![];
             for e in std::fs::read_dir(&p).into_iter().flatten().flatten().take(300) {
@@ -369,7 +370,8 @@ pub fn check_folder(dir: &Path, entry: &Value, names: &[String], os: &str) -> (P
     let mut roots = vec![dir.to_path_buf()];
     // The game one level down (a zip unpacked into a folder of its own): the folder inside.
     let inside: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| !p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(true)).collect();
-    if inside.len() == 1 && inside[0].is_dir() {
+    if inside.len() == 1 && inside[0].is_dir()
+        && !(os == "macos" && (crate::macos::is_bundle(dir) || crate::macos::is_bundle(&inside[0]))) {
         roots.insert(0, inside[0].clone());
     }
     let repo = entry.get("repo").and_then(Value::as_str).unwrap_or("");
@@ -379,14 +381,18 @@ pub fn check_folder(dir: &Path, entry: &Value, names: &[String], os: &str) -> (P
             if let Some(prog) = start.program.iter().map(|p| p.trim_start_matches("{install}/").to_string()).find(|p| root.join(p).is_file()) {
                 return (root.clone(), Some(PathBuf::from(prog)), true);
             }
-            continue;
+            if os != "macos" {
+                continue;
+            }
         }
         // On Linux a Windows build counts too: it plays through Proton.
         let found = install::find_exe(root, os, &n).or_else(|| (os == "linux").then(|| install::find_exe(root, "windows", &n)).flatten());
         if let Some(exe) = found {
             // Words that are in many recomps' names ("Recompiled", "Port", "Edition") don't count.
             let want: Vec<String> = n.iter().flat_map(|x| install::tokens(x)).filter(|t| t.len() > 2 && t != "the" && !install::TAIL_WORDS.contains(&t.as_str())).collect();
-            let stem = exe.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            // The bundle's name identifies the game; its declared executable may just be "Engine".
+            let bundle = (os == "macos").then(|| root.join(&exe).ancestors().find(|p| crate::macos::is_bundle(p)).map(Path::to_path_buf)).flatten();
+            let stem = bundle.as_deref().unwrap_or(&exe).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             let squashed: String = stem.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
             let named = install::tokens(&stem).iter().any(|t| want.contains(t)) || want.iter().any(|w| w.len() >= 4 && squashed.contains(w.as_str()));
             let rel = exe.strip_prefix(root).map(Path::to_path_buf).unwrap_or(exe);

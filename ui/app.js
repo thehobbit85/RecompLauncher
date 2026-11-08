@@ -3911,11 +3911,11 @@ function gameMenu(id) {
       ] },
       { act: 'customize', id, label: t('Customize…'), icon: 'shot' },
       ...(x && x.custom ? [{ act: 'edit-info', id, label: t('Edit Game Info…'), icon: 'page' }] : []),
-      { label: t('Add To'), icon: 'plus', sub: [
+      ...(S.os !== 'macos' ? [{ label: t('Add To'), icon: 'plus', sub: [
         { act: 'desktop', id, label: t('Add to desktop'), icon: 'desk' },
         ...(S.os === 'windows' || S.os === 'linux' ? [{ act: 'app-menu', id, label: S.os === 'windows' ? t('Add to Start Menu') : t('Add to App Menu'), icon: 'desk' }] : []),
         ...(S.steam ? [{ act: 'steam', id, label: t('Add to Steam'), icon: 'steam' }] : []),
-      ] },
+      ] }] : []),
       { label: t('Files'), icon: 'folder', sub: [
         { act: 'folder', id, label: t('Open its folder'), icon: 'folder' },
         { act: 'shots', id, label: t('Screenshots'), icon: 'shot' },

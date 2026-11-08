@@ -714,6 +714,27 @@ fn unpack_with(file: &Path, target: &Path, staging: &Path, strip_top: bool) -> R
             validate_links(&entry.path(), &entry.path())?;
         }
     }
+    #[cfg(target_os = "macos")]
+    if strip_top && crate::macos::is_bundle(target) {
+        // An imported application's library root can be the .app itself, rather than
+        // its enclosing game folder. Replace that unit, never nest the new app in it.
+        let mut bundles = Vec::new();
+        for entry in fs::read_dir(&from)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() && crate::macos::is_bundle(&entry.path()) {
+                bundles.push(entry.path());
+            }
+        }
+        if bundles.len() != 1 {
+            return Err(Error::Msg("This download must contain one Mac app to update the imported application.".into()));
+        }
+        let bundle = &bundles[0];
+        let mut files = vec![];
+        list(bundle, bundle, &mut files);
+        replace_bundle(bundle, target)?;
+        let _ = fs::remove_dir_all(staging);
+        return Ok(files);
+    }
     let mut files = vec![];
     list(&from, &from, &mut files);
     overlay(&from, target)?;
@@ -804,7 +825,7 @@ const QUICK_WORDS: [&str; 3] = ["play", "quick", "direct"];
 
 /// The version of find_exe's rules. Raise it when they pick better, and installs picked by older
 /// rules get looked at again on their next Play (own_setup::pending).
-pub const EXE_RULES: u8 = 16;
+pub const EXE_RULES: u8 = 17;
 
 /// Words in the name of a program that comes with a game but is one of its tools: a translator,
 /// shader builder, compiler, patcher or dedicated server (xcx_xlate, ultrs-shaders, xbe_recomp,
@@ -991,6 +1012,12 @@ pub fn is_program(p: &Path, os: &str) -> bool {
 /// The program to start, relative to `dir`: the one whose name looks most like the game's, near the
 /// top of the folder, and big (the game is usually the biggest program in its folder).
 pub fn find_exe(dir: &Path, os: &str, names: &[&str]) -> Option<PathBuf> {
+    // An imported app can itself be the search root. Never score its helpers or
+    // search inside a bundle whose declared executable is missing or incompatible.
+    if os == "macos" && crate::macos::is_bundle(dir) {
+        return crate::macos::bundle_executable(dir, crate::assets::arch_now())
+            .and_then(|exe| exe.strip_prefix(dir).ok().map(Path::to_path_buf));
+    }
     let mut want: Vec<String> = names.iter().flat_map(|n| tokens(n)).filter(|t| t.len() > 2 && t != "recomp" && t != "the").collect();
     // Initials too: VCSLauncher.exe is Vice City Stories' launcher, mcla.exe Midnight Club Los
     // Angeles.
@@ -1454,6 +1481,30 @@ mod mac_archive_tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn mac_imported_app_updates_replace_the_library_root_without_nesting() {
+        let d = temp("imported-update");
+        let target = d.join("installed/Game.app");
+        fs::write(d.join("game.zip"), app_zip(&[("Game.app/Contents/Resources/obsolete", b"old", 0o644)])).unwrap();
+        unpack(&d.join("game.zip"), target.parent().unwrap(), &d.join("stage")).unwrap();
+        fs::write(target.parent().unwrap().join("save.sav"), b"player progress").unwrap();
+
+        fs::write(d.join("game.zip"), app_zip(&[])).unwrap();
+        let files = unpack(&d.join("game.zip"), &target, &d.join("stage")).unwrap();
+        assert_eq!(fs::read(target.join("Contents/MacOS/Game")).unwrap(), b"program");
+        assert!(!target.join("Game.app").exists());
+        assert!(!target.join("Contents/Resources/obsolete").exists());
+        assert_eq!(fs::read(target.parent().unwrap().join("save.sav")).unwrap(), b"player progress");
+        assert!(files.contains(&PathBuf::from("Contents/MacOS/Game")));
+        assert!(fs::read_link(target.join("Contents/Frameworks/Engine.framework/Versions/Current")).is_ok());
+
+        // A release with no replacement app must leave the existing bundle untouched.
+        fs::write(d.join("loose.zip"), archive(&[("OtherGame", b"program", 0o755)], &[])).unwrap();
+        assert!(unpack(&d.join("loose.zip"), &target, &d.join("stage")).is_err());
+        assert_eq!(fs::read(target.join("Contents/MacOS/Game")).unwrap(), b"program");
+    }
+
+    #[test]
     fn mac_archive_rejects_links_outside_staging() {
         for (label, link) in [("absolute", "/tmp"), ("relative", "../../outside")] {
             let d = temp(label);
@@ -1545,8 +1596,27 @@ mod mac_discovery_tests {
     #[test]
     fn mac_detection_uses_bundle_metadata_instead_of_largest_helper() {
         let d = temp("metadata");
-        bundle(&d, "Engine");
+        let app = bundle(&d, "Engine");
         assert_eq!(find_game_exe(&d, "macos", &["My Game"]), Some(PathBuf::from("My Game.app/Contents/MacOS/Engine")));
+        assert_eq!(find_game_exe(&app, "macos", &["My Game"]), Some(PathBuf::from("Contents/MacOS/Engine")));
+    }
+
+    #[test]
+    fn mac_existing_game_import_keeps_bundles_whole_and_uses_their_names() {
+        let d = temp("import");
+        let app = bundle(&d, "Engine");
+        let names = ["My Game".to_string()];
+        let entry = serde_json::json!({"name": "My Game"});
+        let (root, exe, fits) = crate::adopt::check_folder(&app, &entry, &names, "macos");
+        assert_eq!(root, app);
+        assert_eq!(exe, Some(PathBuf::from("Contents/MacOS/Engine")));
+        assert!(fits, "the bundle name identifies a game with a generic executable name");
+        let (root, exe, fits) = crate::adopt::check_folder(&d, &entry, &names, "macos");
+        assert_eq!(root, d);
+        assert_eq!(exe, Some(PathBuf::from("My Game.app/Contents/MacOS/Engine")));
+        assert!(fits);
+        let (_, _, fits) = crate::adopt::check_folder(&app, &entry, &["Unrelated Title".to_string()], "macos");
+        assert!(!fits, "a bundle is not automatically the requested game");
     }
 
     #[test]
@@ -1575,8 +1645,9 @@ mod mac_discovery_tests {
     fn mac_detection_does_not_guess_inside_invalid_bundle() {
         for declared in ["Missing", "../Engine", "/Engine"] {
             let d = temp(&format!("invalid-{}", declared.replace('/', "_")));
-            bundle(&d, declared);
+            let app = bundle(&d, declared);
             assert!(find_game_exe(&d, "macos", &["My Game"]).is_none());
+            assert!(find_game_exe(&app, "macos", &["My Game"]).is_none());
         }
     }
 

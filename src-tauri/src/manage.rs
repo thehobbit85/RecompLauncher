@@ -69,6 +69,13 @@ fn copy_tree(from: &Path, to: &Path, done: &mut u64, total: u64, report: &dyn Fn
     for e in fs::read_dir(from)? {
         let e = e?;
         let (src, dst) = (e.path(), to.join(e.file_name()));
+        #[cfg(unix)]
+        if e.file_type()?.is_symlink() {
+            // Frameworks in signed Mac apps use relative directory and file links.
+            // Recreate the link itself, including dangling links, without reading its target.
+            std::os::unix::fs::symlink(fs::read_link(&src)?, &dst)?;
+            continue;
+        }
         if e.file_type()?.is_dir() {
             copy_tree(&src, &dst, done, total, report)?;
         } else {
@@ -84,11 +91,12 @@ fn copy_tree(from: &Path, to: &Path, done: &mut u64, total: u64, report: &dyn Fn
                 *done += n as u64;
                 report(*done, total);
             }
-            if let Ok(m) = e.metadata() {
-                let _ = fs::set_permissions(&dst, m.permissions());
-            }
+            fs::set_permissions(&dst, e.metadata()?.permissions())?;
         }
     }
+    // Apply directory permissions last so read-only bundle directories can be populated first.
+    #[cfg(unix)]
+    fs::set_permissions(to, fs::metadata(from)?.permissions())?;
     Ok(())
 }
 
@@ -352,6 +360,37 @@ mod tests {
         let mut done = 0;
         copy_tree(&d.join("b/game"), &d.join("c/game"), &mut done, 5, &|_, _| {}).unwrap();
         assert_eq!(done, 5);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn copying_a_bundle_preserves_framework_links_and_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let d = tmp("mac-copy");
+        let source = d.join("source/Game.app");
+        let dest = d.join("dest/Game.app");
+        let framework = "Contents/Frameworks/Engine.framework";
+        fs::create_dir_all(source.join(format!("{framework}/Versions/A"))).unwrap();
+        fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        fs::write(source.join("Contents/MacOS/Game"), b"program").unwrap();
+        fs::set_permissions(source.join("Contents/MacOS/Game"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(source.join(format!("{framework}/Versions/A/Engine")), b"library").unwrap();
+        symlink("A", source.join(format!("{framework}/Versions/Current"))).unwrap();
+        symlink("Versions/Current/Engine", source.join(format!("{framework}/Engine"))).unwrap();
+        symlink("missing", source.join("optional-link")).unwrap();
+        fs::set_permissions(source.join("Contents/MacOS"), fs::Permissions::from_mode(0o750)).unwrap();
+
+        // Exercise the cross-drive fallback directly, even when the test uses a single drive.
+        let mut done = 0;
+        copy_tree(&source, &dest, &mut done, dir_size(&source), &|_, _| {}).unwrap();
+        assert_eq!(done, 14, "link targets must not be copied a second time");
+        assert_eq!(fs::read_link(dest.join(format!("{framework}/Versions/Current"))).unwrap(), PathBuf::from("A"));
+        assert_eq!(fs::read_link(dest.join(format!("{framework}/Engine"))).unwrap(), PathBuf::from("Versions/Current/Engine"));
+        assert_eq!(fs::read_link(dest.join("optional-link")).unwrap(), PathBuf::from("missing"));
+        assert_eq!(fs::read(dest.join(format!("{framework}/Engine"))).unwrap(), b"library");
+        assert_eq!(fs::metadata(dest.join("Contents/MacOS/Game")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(dest.join("Contents/MacOS")).unwrap().permissions().mode() & 0o777, 0o750);
     }
 }
 

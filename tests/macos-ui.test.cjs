@@ -35,3 +35,62 @@ test('file and folder selection keep their existing behavior', () => {
   assert.equal(picker('macos', { directory: true }, app), app.path);
   assert.equal(picker('macos', { directory: true }, null), '/Games');
 });
+
+function gameActions(os, steam, tv) {
+  const game = { id: 'game', name: 'My Game', path: '/Games/My Game' };
+  const ctx = vm.createContext({
+    S: { os, steam, library: { game }, updates: {}, view: 'game', arg: 'game',
+      easy: new Set(), mods: {}, setup: {}, running: new Set(), jobs: {} },
+    TV: { view: 'game', arg: 'game', sheet: {} }, GAMEVIEWS: ['game'], window: {},
+    byId: () => null, libAppOf: () => game, pins: () => [], favs: () => [],
+    looksHere: () => false, mainItem: () => null, verGroup: () => null,
+    timeLine: () => '', t: (s) => s, esc: (s) => s,
+  });
+  if (tv) {
+    const code = fs.readFileSync(path.join(__dirname, '../ui/tv.js'), 'utf8');
+    const match = code.match(/^  function gameSheet\([^]*?^  }/m);
+    assert.ok(match, 'Big Picture game menu exists');
+    ctx.sheet = (_name, items) => { ctx.items = items; };
+    vm.runInContext(match[0], ctx);
+    vm.runInContext("gameSheet('game')", ctx);
+  } else {
+    const match = source.match(/^function gameMenu\([^]*?^}/m);
+    assert.ok(match, 'desktop game menu exists');
+    vm.runInContext(match[0], ctx);
+    ctx.items = vm.runInContext("gameMenu('game')", ctx);
+  }
+  const labels = [];
+  function collect(items) {
+    for (const item of items) {
+      if (item.label) labels.push(item.label);
+      if (item.sub && Array.isArray(item.sub)) collect(item.sub);
+    }
+  }
+  collect(ctx.items);
+  return labels;
+}
+
+test('Mac desktop and Big Picture menus omit unsupported shortcuts even if Steam is detected', () => {
+  for (const tv of [false, true]) {
+    for (const steam of [false, true]) {
+      const labels = gameActions('macos', steam, tv);
+      for (const label of ['Add To', 'Add to desktop', 'Add to Steam', 'Add to App Menu', 'Add to Start Menu']) {
+        assert.ok(!labels.includes(label), `${label} must be hidden on Mac (TV: ${tv})`);
+      }
+      assert.ok(labels.includes('Screenshots'), 'other game actions remain available');
+    }
+  }
+});
+
+test('Windows and Linux keep desktop shortcuts and conditionally offer Steam in both menus', () => {
+  for (const os of ['windows', 'linux']) {
+    for (const tv of [false, true]) {
+      for (const steam of [false, true]) {
+        const labels = gameActions(os, steam, tv);
+        assert.ok(labels.includes('Add to desktop'));
+        assert.equal(labels.includes('Add to Steam'), steam);
+        if (!tv) assert.ok(labels.includes(os === 'windows' ? 'Add to Start Menu' : 'Add to App Menu'));
+      }
+    }
+  }
+});
