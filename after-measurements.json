@@ -1,0 +1,60 @@
+{
+  "measurements": [
+    {
+      "width": 1032,
+      "height": 435,
+      "dpr": 1,
+      "view": "game",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    },
+    {
+      "width": 952,
+      "height": 512,
+      "dpr": 1,
+      "view": "home",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    },
+    {
+      "width": 1672,
+      "height": 440,
+      "dpr": 1,
+      "view": "game",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    },
+    {
+      "width": 1592,
+      "height": 520,
+      "dpr": 1,
+      "view": "home",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    },
+    {
+      "width": 1672,
+      "height": 440,
+      "dpr": 2,
+      "view": "game",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    },
+    {
+      "width": 1592,
+      "height": 520,
+      "dpr": 2,
+      "view": "home",
+      "src": "https://recomplauncher.com/media/synthetic-original.png",
+      "naturalWidth": 3840,
+      "naturalHeight": 1240
+    }
+  ],
+  "errors": [],
+  "blocked": []
+}
